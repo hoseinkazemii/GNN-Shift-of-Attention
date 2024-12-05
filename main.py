@@ -1,18 +1,19 @@
-# Load CSV Data and Define Helper Functions
 import os
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import torch
-from torch_geometric.data import Data
+from scipy.spatial.distance import euclidean
 import networkx as nx
-import torch
-from torch_geometric.loader import DataLoader
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report
+import torch
+from torch_geometric.data import Data, Dataset
+from torch_geometric.loader import DataLoader
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv
 
 
 # Define the folder path where the CSV files are stored
-folder_path = './PowerLine Scenario Data-20241031'  # Update this path to your CSV folder
+folder_path = './PowerLine Scenario Data-20241031/Backup'  # Update this path to your CSV folder
 
 def read_data(folder_path):
     # Initialize an empty list to store dataframes
@@ -33,74 +34,82 @@ def read_data(folder_path):
     return dataframes
 
 # Concatenate all dataframes into a single dataframe
-eye_tracking_data = read_data(folder_path=folder_path)
-
-# # Plotting attention shift comparison for different objects
-# def plot_attention_shifts(df):
-#     # Count the occurrences of each object being fixated
-#     fixation_counts = df['Name'].value_counts()
-    
-#     # Plot the fixation counts
-#     plt.figure(figsize=(10, 6))
-#     fixation_counts.plot(kind='bar', color='skyblue')
-#     plt.xlabel('Objects')
-#     plt.ylabel('Number of Fixations')
-#     plt.title('Attention Shifts to Different Objects')
-#     plt.xticks(rotation=45, ha='right')
-#     plt.tight_layout()
-#     plt.show()
-
-# Call the plotting function
-# plot_attention_shifts(eye_tracking_data)
-# Plotting attention shift comparison for different objects towards the powerline
-# def plot_attention_shifts_to_powerline(df):
-#     # Identify shifts in attention by checking changes in the 'Name' column
-#     df['Previous_Name'] = df['Name'].shift(1)
-#     df['Attention_Shift'] = (df['Name'] != df['Previous_Name'])
-    
-#     # Set the first row's 'Attention_Shift' to False since it cannot be a shift
-#     df.loc[0, 'Attention_Shift'] = False
-    
-#     # Filter rows where there is an attention shift to 'PowerLine1'
-#     powerline_shifts = df[(df['Name'] == 'PowerLine1') & (df['Attention_Shift'])]
-    
-#     # Count the occurrences of each object shifting attention to the powerline
-#     shift_counts = powerline_shifts['Previous_Name'].value_counts()
-
-#     # Plot the shift counts
-#     plt.figure(figsize=(10, 6))
-#     shift_counts.plot(kind='bar', color='skyblue')
-#     plt.xlabel('Objects')
-#     plt.ylabel('Number of Attention Shifts to PowerLine1')
-#     plt.title('Attention Shifts to PowerLine1 from Different Objects')
-#     plt.xticks(rotation=45, ha='right')
-#     plt.tight_layout()
-#     plt.savefig('Attention Shifts to PowerLine1 from Different Objects.png')
-#     plt.show()
+eye_df = read_data(folder_path="./PowerLine Scenario Data-20241031")
 
 
+def extract_object_positions(folder_path):
+    # List of names to exclude
+    moving_objects = ["ChainEyeTracker", "GrabbableObject", "crane_hook", 
+                    "CabinPanelEyeTracker", "CraneJibEyeTracker", "LinkBelow",
+                    'Moving_Black_Car', 'Moving_Black_Volkswagen_Car', 
+                    'Moving_Blue_Car', 'Moving_CocaCola_Red_Truck', 
+                    'Moving_Dark_Blue_Audi_Car', 
+                    'Moving_Red_Car', 'Moving_White_Maserati_Car', 
+                    'Moving_Yellow_BUS', 'Moving_Yellow_Car',
+                    'Rope']  # Add or modify this list as needed
 
-import networkx as nx
-import torch
-from torch_geometric.data import Data
+    known_positions_df = pd.DataFrame()
+
+    for filename in os.listdir(folder_path):
+        if filename.startswith("VREyeTracking_PowerLineScenario") and filename.endswith(".csv"):
+            file_path = os.path.join(folder_path, filename)
+            df = pd.read_csv(file_path)
+            known_positions_df = pd.concat([known_positions_df, df], ignore_index=True)
+
+    required_columns = ["Name", "Object X", "Object Y", "Object Z"]
+    if not all(col in known_positions_df.columns for col in required_columns):
+        raise ValueError(f"The dataset must contain the following columns: {required_columns}")
+
+    # Create a dictionary for unique "Name" values, mapping them to the first occurrence of (Object X, Object Y, Object Z),
+    # excluding the specified names
+    object_positions_dict = {}
+    for name, group in known_positions_df.groupby("Name"):
+        if name not in moving_objects:
+            first_row = group.iloc[0]
+            object_positions_dict[name] = (first_row["Object X"], first_row["Object Y"], first_row["Object Z"])
+
+    return object_positions_dict
+
 
 # Create snapshots for each timeframe for node prediction task
-def create_graph_snapshots(df, downsampling_factor):
+def create_graph_snapshots(folder_path, eye_df, load_df, downsampling_factor, powerline_allowed_distance, edge_attribute_option):
     temporal_snapshots = []
     labels = []
-    last_known_positions = {}
+    last_known_positions = extract_object_positions(folder_path)
 
-    # Get all unique objects
-    all_objects = df['Name'].unique()
+    # Get the start time for loading from LoadData_PowerLineScenario
+    loading_start_time = load_df.loc[load_df['LoadingStarted'] == 1, 'Time'].iloc[0]
 
-    # Iterate through downsampled frames to create individual graph snapshots
-    for i in range(0, len(df), downsampling_factor):
-        current_time = df.iloc[i]['Timeframe']
-        downsampled_df = df[i:i + downsampling_factor]
+    # Find the corresponding start time in the eye-tracking dataset
+    start_index = eye_df[eye_df['Timeframe'] >= loading_start_time].index[0]
+    eye_df_filtered = eye_df[(eye_df['Timeframe'] >= loading_start_time) & 
+                             (eye_df['Powerline and Grabbable X Distance'] <= powerline_allowed_distance)]
+
+    # Extract all dominant objects across downsampled dataframes
+    all_objects = set()
+    for i in range(0, len(eye_df_filtered), downsampling_factor):
+        downsampled_df = eye_df_filtered[i:i + downsampling_factor]
+        dominant_name = downsampled_df['Name'].value_counts().idxmax()
+        all_objects.add(dominant_name)
+    all_objects = list(all_objects)
+
+    # Pre-populate last known positions by going back before loading start time
+    for obj_name in all_objects:
+        obj_data = eye_df[(eye_df['Name'] == obj_name) & (eye_df.index < start_index)]
+    
+        if not obj_data.empty:
+            # Use last known position
+            last_instance = obj_data.iloc[-1]
+            last_known_positions[obj_name] = (last_instance['Object X'], last_instance['Object Y'], last_instance['Object Z'])
+
+    # Iterate through downsampled frames starting from the loading start index to create individual graph snapshots
+    for i in range(0, len(eye_df_filtered), downsampling_factor):
+        current_time = eye_df_filtered.iloc[i]['Timeframe']
+        downsampled_df = eye_df_filtered[i:i + downsampling_factor]
 
         # Create a new graph for this snapshot (initialize a new empty graph each time)
         G = nx.DiGraph()
-
+        
         # Add temporal nodes for all objects at the current timeframe
         for obj_name in all_objects:
             temporal_node = (obj_name, current_time)
@@ -112,52 +121,52 @@ def create_graph_snapshots(df, downsampling_factor):
                 z = downsampled_df[downsampled_df['Name'] == obj_name]['Object Z'].mean()
                 last_known_positions[obj_name] = (x, y, z)
             else:
-                # Use last known position
-                if obj_name in last_known_positions:
-                    x, y, z = last_known_positions[obj_name]
-                else:
-                    x = y = z = 0  # Default value if no known position exists
+                x, y, z = last_known_positions.get(obj_name, (0, 0, 0))
 
             # Add temporal node with spatial coordinates
             G.add_node(temporal_node, x=x, y=y, z=z)
 
         # Add spatial edges between nodes in the current timeframe
         nodes_at_time = list(G.nodes)
+
         threshold = 20  # Define spatial proximity threshold
         for i, node_i in enumerate(nodes_at_time):
             for j in range(i + 1, len(nodes_at_time)):
                 node_j = nodes_at_time[j]
                 if G.nodes[node_i]['x'] is not None and G.nodes[node_j]['x'] is not None:
-                    distance = ((G.nodes[node_i]['x'] - G.nodes[node_j]['x']) ** 2 +
-                                (G.nodes[node_i]['y'] - G.nodes[node_j]['y']) ** 2 +
-                                (G.nodes[node_i]['z'] - G.nodes[node_j]['z']) ** 2) ** 0.5
+                    distance = euclidean(
+                        (G.nodes[node_i]['x'], G.nodes[node_i]['y'], G.nodes[node_i]['z']),
+                        (G.nodes[node_j]['x'], G.nodes[node_j]['y'], G.nodes[node_j]['z'])
+                    )
                     if distance < threshold:
-                        # Add an edge in both directions
-                        G.add_edge(node_i, node_j, spatial_edge=True)
-                        G.add_edge(node_j, node_i, spatial_edge=True)
+                        # Determine edge weight based on the chosen option
+                        if edge_attribute_option == 1:
+                            weight = 1 / distance if distance != 0 else 0  # Inverse distance
+                        elif edge_attribute_option == 2:
+                            sigma = 10  # You can tune sigma for the Gaussian kernel
+                            weight = np.exp(-distance ** 2 / (2 * sigma ** 2))
+                        else:
+                            raise ValueError("Invalid edge_attribute_option. Choose 1 (inverse distance) or 2 (Gaussian kernel).")
+
+                        # Add an edge in both directions with the computed weight
+                        G.add_edge(node_i, node_j, spatial_edge=True, weight=weight)
+                        G.add_edge(node_j, node_i, spatial_edge=True, weight=weight)
 
         # Convert the graph to PyTorch Geometric Data and store it
         pyg_data = convert_to_pyg_data(G)
         temporal_snapshots.append(pyg_data)
-    
+
     # Generate labels for node prediction (shift of attention)
     for snapshot_idx in range(1, len(temporal_snapshots)):
-        # Previous and current data
-        previous_snapshot = temporal_snapshots[snapshot_idx - 1]
-        current_snapshot = temporal_snapshots[snapshot_idx]
-
         # Identify the node that has received attention in the current snapshot
-        dominant_name = df.iloc[(snapshot_idx - 1) * downsampling_factor : snapshot_idx * downsampling_factor]['Name'].value_counts().idxmax()
-
+        dominant_name = eye_df_filtered.iloc[(snapshot_idx - 1) * downsampling_factor : snapshot_idx * downsampling_factor]['Name'].value_counts().idxmax()
         # Find the index of the dominant node
         label = [idx for idx, (obj_name, _) in enumerate(G.nodes) if obj_name == dominant_name]
         labels.append(label[0] if label else 0)  # Use 0 if the node wasn't found (handle edge cases)
-    
 
-    # print(labels)
+    return temporal_snapshots, labels, eye_df, eye_df_filtered
 
 
-    return temporal_snapshots, labels
 
 # Convert NetworkX graph to PyTorch Geometric data format
 def convert_to_pyg_data(G):
@@ -186,13 +195,19 @@ def convert_to_pyg_data(G):
 
     return data
 
+
 # Load dataset and create temporal snapshots
-temporal_snapshots, labels = create_graph_snapshots(eye_tracking_data, downsampling_factor=15)
+load_df = pd.read_csv('./PowerLine Scenario Data-20241031/LoadData_PowerLineScenario_20241031184156.csv')  # Example LoadData file
+
+temporal_snapshots, labels, eye_df, eye_df_filtered = \
+    create_graph_snapshots(folder_path, eye_df, load_df, \
+                           downsampling_factor=15, powerline_allowed_distance=40, \
+                           edge_attribute_option=1)
 
 
-from torch_geometric.data import Dataset
-from torch_geometric.loader import DataLoader
 
+
+raise ValueError
 # Create a custom dataset for node prediction
 class NodePredictionDataset(Dataset):
     def __init__(self, snapshots, labels):
@@ -216,6 +231,8 @@ class NodePredictionDataset(Dataset):
         # Assign the label to each node
         # If all nodes have the same label (i.e., we are making a snapshot-level prediction),
         # repeat the label for all nodes in the snapshot
+        print(self.labels)
+        raise ValueError
         label_value = self.labels[idx]
         data.y = torch.tensor([label_value] * data.num_nodes, dtype=torch.long)
 
@@ -234,11 +251,6 @@ loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 #     break
 
 
-from torch_geometric.data import DataLoader, Dataset
-from sklearn.preprocessing import StandardScaler
-import torch
-
-
 # Step 1: Feature Scaling for All Graph Snapshots
 scaler = StandardScaler()
 
@@ -254,11 +266,6 @@ for pyg_data in temporal_snapshots:
     node_features_scaled = scaler.transform(node_features_np)  # Scale the features
     pyg_data.x = torch.tensor(node_features_scaled, dtype=torch.float)  # Convert back to tensor
 
-
-
-import torch
-from torch_geometric.data import Data
-import numpy as np
 
 # Sliding Window Parameters
 train_window_size = 6  # 8 frames for training
@@ -315,17 +322,6 @@ print(f"Val Snapshots: {len(val_snapshots)}, Val Labels: {len(val_labels)}")
 print(f"Test Snapshots: {len(test_snapshots)}, Test Labels: {len(test_labels)}")
 
 
-# print(f"train_snapshots: {train_snapshots}")
-# print("**************************")
-# print(f"val_snapshots: {len(val_snapshots)}")
-# print("**************************")
-# print(f"test_snapshots: {len(test_snapshots)}")
-# print(f"train_labels: {train_labels}")
-# print("**************************")
-# print(f"val_labels: {len(val_labels)}")
-# print("**************************")
-# print(f"test_labels: {len(test_labels)}")
-# raise ValueError
 # Create NodePredictionDataset instances for train, validation, and test
 train_dataset = NodePredictionDataset(train_snapshots, train_labels)
 val_dataset = NodePredictionDataset(val_snapshots, val_labels)
@@ -353,13 +349,6 @@ for batch in test_loader:
 
 
 
-# raise ValueError
-
-
-import torch
-import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
-
 
 # Define a simple GCN model for node prediction
 class GCN(torch.nn.Module):
@@ -386,7 +375,7 @@ print(f"Number of classes: {num_classes}")  # This should print 8
 # Update the model initialization with the correct number of output channels
 in_channels = temporal_snapshots[0].num_node_features
 hidden_channels = 16
-out_channels = 8  # Set output channels to 8
+out_channels = 1  # Set output channels to 1
 
 model = GCN(in_channels, hidden_channels, out_channels)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
@@ -405,6 +394,12 @@ for epoch in range(50):
         try:
             loss = loss_function(out, batch.y)  # Compute loss
         except IndexError as e:
+            print(out)
+            print(out.shape)
+            print("******************")
+            print(batch.y)
+            print(batch.y.shape)
+            print("**************************")
             print(f"Label issue found: {batch.y}")
             raise e
         
@@ -416,7 +411,6 @@ for epoch in range(50):
 
 
 
-from sklearn.metrics import classification_report
 
 # Ensure the model is in evaluation mode
 model.eval()
