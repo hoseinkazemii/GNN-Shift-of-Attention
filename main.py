@@ -9,6 +9,7 @@ import torch
 from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
+from torch.nn import Linear
 from torch_geometric.nn import GCNConv
 
 
@@ -28,7 +29,7 @@ def read_data(folder_path):
             df = pd.read_csv(file_path)
             # Append the dataframe to the list
             dataframes.append(df)
-    
+
     dataframes = pd.concat(dataframes, ignore_index=True)
 
     return dataframes
@@ -96,7 +97,6 @@ def create_graph_snapshots(folder_path, eye_df, load_df, downsampling_factor, po
     # Pre-populate last known positions by going back before loading start time
     for obj_name in all_objects:
         obj_data = eye_df[(eye_df['Name'] == obj_name) & (eye_df.index < start_index)]
-    
         if not obj_data.empty:
             # Use last known position
             last_instance = obj_data.iloc[-1]
@@ -149,23 +149,29 @@ def create_graph_snapshots(folder_path, eye_df, load_df, downsampling_factor, po
                             raise ValueError("Invalid edge_attribute_option. Choose 1 (inverse distance) or 2 (Gaussian kernel).")
 
                         # Add an edge in both directions with the computed weight
-                        G.add_edge(node_i, node_j, spatial_edge=True, weight=weight)
-                        G.add_edge(node_j, node_i, spatial_edge=True, weight=weight)
+                        G.add_edge(node_i, node_j, weight=weight)
+                        G.add_edge(node_j, node_i, weight=weight)
 
         # Convert the graph to PyTorch Geometric Data and store it
         pyg_data = convert_to_pyg_data(G)
         temporal_snapshots.append(pyg_data)
 
-    # Generate labels for node prediction (shift of attention)
-    for snapshot_idx in range(1, len(temporal_snapshots)):
+    # Generate labels for node classification (index of the fixated node in each snapshot)
+    labels = []
+    for snapshot_idx in range(len(temporal_snapshots)):
         # Identify the node that has received attention in the current snapshot
-        dominant_name = eye_df_filtered.iloc[(snapshot_idx - 1) * downsampling_factor : snapshot_idx * downsampling_factor]['Name'].value_counts().idxmax()
-        # Find the index of the dominant node
-        label = [idx for idx, (obj_name, _) in enumerate(G.nodes) if obj_name == dominant_name]
-        labels.append(label[0] if label else 0)  # Use 0 if the node wasn't found (handle edge cases)
+        dominant_name = eye_df_filtered.iloc[
+            snapshot_idx * downsampling_factor : (snapshot_idx + 1) * downsampling_factor
+        ]['Name'].value_counts().idxmax()
+
+        # Find the index of the dominant node in the current graph
+        graph_nodes = list(temporal_snapshots[snapshot_idx].x)  # List of node features
+        dominant_node_index = next(
+            idx for idx, (name, _) in enumerate(graph_nodes) if name == dominant_name
+        )
+        labels.append(dominant_node_index)
 
     return temporal_snapshots, labels, eye_df, eye_df_filtered
-
 
 
 # Convert NetworkX graph to PyTorch Geometric data format
@@ -182,8 +188,8 @@ def convert_to_pyg_data(G):
 
     for u, v, d in G.edges(data=True):
         edge_index.append([node_mapping[u], node_mapping[v]])
-        # Edge attributes: [spatial_edge]
-        edge_attr.append([1 if d.get('spatial_edge') else 0])
+        # Only include weight as edge attribute
+        edge_attr.append(d['weight'])
 
     # Convert to PyTorch tensors
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
@@ -195,23 +201,25 @@ def convert_to_pyg_data(G):
 
     return data
 
-
 # Load dataset and create temporal snapshots
 load_df = pd.read_csv('./PowerLine Scenario Data-20241031/LoadData_PowerLineScenario_20241031184156.csv')  # Example LoadData file
 
 temporal_snapshots, labels, eye_df, eye_df_filtered = \
     create_graph_snapshots(folder_path, eye_df, load_df, \
                            downsampling_factor=15, powerline_allowed_distance=40, \
-                           edge_attribute_option=1)
+                           edge_attribute_option=2)
 
 
-
-
-raise ValueError
-# Create a custom dataset for node prediction
-class NodePredictionDataset(Dataset):
+# Create a custom dataset for node classification
+class NodeClassificationDataset(Dataset):
     def __init__(self, snapshots, labels):
-        super(NodePredictionDataset, self).__init__()
+        """
+        Args:
+            snapshots (list): List of graph snapshots (PyTorch Geometric Data objects).
+            labels (list): List of labels for the fixated node in each graph snapshot. 
+                           Each label corresponds to a single node's classification target.
+        """
+        super(NodeClassificationDataset, self).__init__()
         self.snapshots = snapshots
         self.labels = labels
 
@@ -219,29 +227,32 @@ class NodePredictionDataset(Dataset):
         if len(self.snapshots) != len(self.labels):
             raise ValueError(f"Number of snapshots ({len(self.snapshots)}) does not match number of labels ({len(self.labels)})")
 
-    def len(self):
+    def __len__(self):
         return len(self.snapshots)
 
-    def get(self, idx):
-        if idx >= len(self.labels):
-            raise IndexError(f"Index {idx} out of range for labels of length {len(self.labels)}")
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the snapshot to retrieve.
         
+        Returns:
+            data (Data): Graph snapshot with a node classification target (data.y).
+        """
         data = self.snapshots[idx]
 
-        # Assign the label to each node
-        # If all nodes have the same label (i.e., we are making a snapshot-level prediction),
-        # repeat the label for all nodes in the snapshot
-        print(self.labels)
-        raise ValueError
-        label_value = self.labels[idx]
-        data.y = torch.tensor([label_value] * data.num_nodes, dtype=torch.long)
+        # Assign the node-level label (fixated node) for this snapshot
+        fixated_node_index = self.labels[idx]  # Label corresponds to the fixated node's index
+        node_labels = torch.zeros(data.num_nodes, dtype=torch.long)  # Initialize all node labels to 0
+        node_labels[fixated_node_index] = 1  # Mark the fixated node as the target (binary classification)
+        data.y = node_labels  # Assign labels for all nodes
 
         return data
 
 
+
 # Create the dataset and DataLoader
 dataset = NodePredictionDataset(temporal_snapshots[1:], labels)  # Skip the first snapshot (no label)
-batch_size = 32  # You can adjust batch size based on memory availability
+batch_size = 32
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 
@@ -348,21 +359,28 @@ for batch in test_loader:
 
 
 
-
-
-# Define a simple GCN model for node prediction
-class GCN(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels):
-        super(GCN, self).__init__()
-        self.conv1 = GCNConv(in_channels, hidden_channels)
-        self.conv2 = GCNConv(hidden_channels, out_channels)
+class NodeClassifier(torch.nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        """
+        Args:
+            input_dim (int): Number of input features per node.
+            hidden_dim (int): Number of hidden units in the graph convolutional layers.
+            output_dim (int): Number of output classes for node classification.
+        """
+        super(NodeClassifier, self).__init__()
+        self.conv1 = GCNConv(input_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.fc = Linear(hidden_dim, output_dim)  # Fully connected layer for node classification
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
         x = self.conv1(x, edge_index)
-        x = F.relu(x)
+        x = torch.relu(x)
         x = self.conv2(x, edge_index)
-        return F.log_softmax(x, dim=1)
+        x = torch.relu(x)
+        x = self.fc(x)  # Final layer for classification
+        return x  # Output shape: [num_nodes, output_dim]
+
 
 
 # Determine the number of unique labels
