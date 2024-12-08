@@ -72,11 +72,10 @@ def extract_object_positions(folder_path):
     return object_positions_dict
 
 
-# Create snapshots for each timeframe for node prediction task
 def create_graph_snapshots(folder_path, eye_df, load_df, downsampling_factor, powerline_allowed_distance, edge_attribute_option):
-    temporal_snapshots = []
-    labels = []
-    last_known_positions = extract_object_positions(folder_path)
+    temporal_snapshots = []  # Graph snapshots in downsampled timeframes
+    labels = []  # Labels for node classification
+    last_known_positions = extract_object_positions(folder_path)  # Dictionary that stores object positions
 
     # Get the start time for loading from LoadData_PowerLineScenario
     loading_start_time = load_df.loc[load_df['LoadingStarted'] == 1, 'Time'].iloc[0]
@@ -109,7 +108,7 @@ def create_graph_snapshots(folder_path, eye_df, load_df, downsampling_factor, po
 
         # Create a new graph for this snapshot (initialize a new empty graph each time)
         G = nx.DiGraph()
-        
+
         # Add temporal nodes for all objects at the current timeframe
         for obj_name in all_objects:
             temporal_node = (obj_name, current_time)
@@ -123,8 +122,8 @@ def create_graph_snapshots(folder_path, eye_df, load_df, downsampling_factor, po
             else:
                 x, y, z = last_known_positions.get(obj_name, (0, 0, 0))
 
-            # Add temporal node with spatial coordinates
-            G.add_node(temporal_node, x=x, y=y, z=z)
+            # Add temporal node with spatial coordinates and name
+            G.add_node(temporal_node, x=x, y=y, z=z, name=obj_name)
 
         # Add spatial edges between nodes in the current timeframe
         nodes_at_time = list(G.nodes)
@@ -152,24 +151,15 @@ def create_graph_snapshots(folder_path, eye_df, load_df, downsampling_factor, po
                         G.add_edge(node_i, node_j, weight=weight)
                         G.add_edge(node_j, node_i, weight=weight)
 
+        # Generate label for the dominant node in the current graph snapshot
+        dominant_name = downsampled_df['Name'].value_counts().idxmax()
+        graph_nodes = list(G.nodes)
+        dominant_node_index = next((idx for idx, node in enumerate(graph_nodes) if node[0] == dominant_name), -1)
+        labels.append(dominant_node_index)
+
         # Convert the graph to PyTorch Geometric Data and store it
         pyg_data = convert_to_pyg_data(G)
         temporal_snapshots.append(pyg_data)
-
-    # Generate labels for node classification (index of the fixated node in each snapshot)
-    labels = []
-    for snapshot_idx in range(len(temporal_snapshots)):
-        # Identify the node that has received attention in the current snapshot
-        dominant_name = eye_df_filtered.iloc[
-            snapshot_idx * downsampling_factor : (snapshot_idx + 1) * downsampling_factor
-        ]['Name'].value_counts().idxmax()
-
-        # Find the index of the dominant node in the current graph
-        graph_nodes = list(temporal_snapshots[snapshot_idx].x)  # List of node features
-        dominant_node_index = next(
-            idx for idx, (name, _) in enumerate(graph_nodes) if name == dominant_name
-        )
-        labels.append(dominant_node_index)
 
     return temporal_snapshots, labels, eye_df, eye_df_filtered
 
@@ -210,6 +200,9 @@ temporal_snapshots, labels, eye_df, eye_df_filtered = \
                            edge_attribute_option=2)
 
 
+from torch.utils.data import Dataset, DataLoader
+import torch
+
 # Create a custom dataset for node classification
 class NodeClassificationDataset(Dataset):
     def __init__(self, snapshots, labels):
@@ -217,7 +210,7 @@ class NodeClassificationDataset(Dataset):
         Args:
             snapshots (list): List of graph snapshots (PyTorch Geometric Data objects).
             labels (list): List of labels for the fixated node in each graph snapshot. 
-                           Each label corresponds to a single node's classification target.
+                           Each label corresponds to the index of the fixated node.
         """
         super(NodeClassificationDataset, self).__init__()
         self.snapshots = snapshots
@@ -251,10 +244,45 @@ class NodeClassificationDataset(Dataset):
 
 
 # Create the dataset and DataLoader
-dataset = NodePredictionDataset(temporal_snapshots[1:], labels)  # Skip the first snapshot (no label)
+dataset = NodeClassificationDataset(temporal_snapshots, labels)
+print(dataset[0].y)
+print(dataset[1].y)
+print(dataset[2].y)
+print(dataset[3].y)
+print(dataset[4].y)
+print(dataset[5].y)
+print(dataset[6].y)
+print(dataset[21].y)
+
+raise ValueError
 batch_size = 32
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+print("Dataset Overview:")
+print(f"Number of snapshots (graphs): {len(dataset)}")
+print(f"Example graph structure from the dataset:")
 
+# Print details of the first snapshot
+example_data = dataset[0]
+print(f"Graph 0:")
+print(f" - Number of nodes: {example_data.num_nodes}")
+print(f" - Number of edges: {example_data.edge_index.shape[1]}")
+print(f" - Node features shape: {example_data.x.shape}")
+print(f" - Edge attributes shape: {example_data.edge_attr.shape}")
+print(f" - Labels (y): {example_data.y.tolist()}")
+
+# Inspect the labels and snapshots
+print("\nInspecting labels and snapshots:")
+for i in range(min(4, len(dataset))):  # Print details for the first 5 graphs
+    snapshot = dataset[i]
+    print(f"Snapshot {i}:")
+    print(f" - Fixated node index: {labels[i]}")
+    print(f" - Node features (x): {snapshot.x[:5]}")  # Print first 5 nodes' features
+    print(f" - Edge attributes (first 5): {snapshot.edge_attr[:5] if len(snapshot.edge_attr) > 0 else 'No edge attributes'}")
+    print(f" - Label tensor (y): {snapshot.y.tolist()}")
+
+
+
+raise ValueError
 
 # # Visualize a sample batch (for debugging purposes)
 # for batch in loader:
@@ -333,10 +361,10 @@ print(f"Val Snapshots: {len(val_snapshots)}, Val Labels: {len(val_labels)}")
 print(f"Test Snapshots: {len(test_snapshots)}, Test Labels: {len(test_labels)}")
 
 
-# Create NodePredictionDataset instances for train, validation, and test
-train_dataset = NodePredictionDataset(train_snapshots, train_labels)
-val_dataset = NodePredictionDataset(val_snapshots, val_labels)
-test_dataset = NodePredictionDataset(test_snapshots, test_labels)
+# Create NodeClassificationDataset instances for train, validation, and test
+train_dataset = NodeClassificationDataset(train_snapshots, train_labels)
+val_dataset = NodeClassificationDataset(val_snapshots, val_labels)
+test_dataset = NodeClassificationDataset(test_snapshots, test_labels)
 
 # Create DataLoaders for each dataset
 batch_size = 32
@@ -395,7 +423,7 @@ in_channels = temporal_snapshots[0].num_node_features
 hidden_channels = 16
 out_channels = 1  # Set output channels to 1
 
-model = GCN(in_channels, hidden_channels, out_channels)
+model = NodeClassifier(in_channels, hidden_channels, out_channels)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 loss_function = torch.nn.CrossEntropyLoss()
 
