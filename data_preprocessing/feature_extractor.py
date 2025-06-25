@@ -1,84 +1,14 @@
-import pandas as pd
 import numpy as np
-import networkx as nx
-import matplotlib.pyplot as plt
-from sklearn.metrics import pairwise_distances
 import os
-import time
 import torch
-from torch_geometric.data import Data
 from joblib import Parallel, delayed
 from tqdm import tqdm
-
-df = pd.read_csv("combined_labeled_data.csv")
-
-WINDOW_SIZE = 10
-LOOKAHEAD_SECONDS = 1.5
-CRITICAL_DIST_THRESHOLD = 50
-df_critical = df[
-    (df["Min Distance to Powerline (Grabbable Object)"] < CRITICAL_DIST_THRESHOLD) &
-    (df["LoadingStarted"] == 1)
-].copy()
-
-print(f"Original size: {len(df)}")
-print(f"Critical size (distance + loading): {len(df_critical)}")
-label_counts = df_critical["label_powerline_future_1p5s"].value_counts().sort_index()
-label_percentages = df_critical["label_powerline_future_1p5s"].value_counts(normalize=True).sort_index() * 100
-print("\nLabel Distribution in df_critical:")
-for label, count in label_counts.items():
-    percent = label_percentages[label]
-    print(f"Label {label}: {count} samples ({percent:.2f}%)")
-
-fixation_duration = df_critical.groupby("Name")["Timeframe"].count() * 0.02  # 0.02s sampling interval
-fixated_objects = fixation_duration[fixation_duration >= 0.1].index.tolist()
-
-object_positions = df_critical[df_critical["Name"].isin(fixated_objects)].groupby("Name")[["Object X", "Object Y", "Object Z"]].mean()
-
-# Build distance matrix
-position_matrix = object_positions.values
-object_names = object_positions.index.tolist()
-dist_matrix = pairwise_distances(position_matrix)
-
-dist_df = pd.DataFrame(dist_matrix, index=object_names, columns=object_names)
-
-TOP_K = 3 # Number of nearest neighbors to consider for each node
-G = nx.Graph()
-
-for obj in object_names:
-    G.add_node(obj)
-
-for i, obj in enumerate(object_names):
-    dists = dist_matrix[i]
-    nearest_indices = np.argsort(dists)[1:TOP_K + 1]  # skip self
-    for j in nearest_indices:
-        neighbor = object_names[j]
-        G.add_edge(obj, neighbor)
-
-# # Visualize the graph
-# plt.figure(figsize=(18, 12))
-# pos = nx.spring_layout(G, seed=42, k=0.5)  # `k` controls spacing between nodes
-# nx.draw_networkx_nodes(G, pos, node_color="lightgreen", node_size=700, alpha=0.9)
-# nx.draw_networkx_edges(G, pos, width=1.5, alpha=0.6)
-# nx.draw_networkx_labels(
-#     G,
-#     pos,
-#     font_size=9,
-#     font_family="sans-serif",
-#     bbox=dict(facecolor="white", edgecolor="black", boxstyle="round,pad=0.2", alpha=0.8)
-# )
-
-# plt.title("Static Graph — Fixated Objects (≥0.1s), Loading Started, Distance < 50", fontsize=14)
-# plt.axis("off")
-# plt.tight_layout()
-# plt.savefig("./plots/static_graph.png", dpi=600)
-# plt.show()
 
 
 def build_node_features(df_t, object_names):
     """
     Given a dataframe for a single timestep, returns node feature tensor in the order of object_names.
     """
-    start_time = time.time()
     features = []
     for obj in object_names:
         obj_df = df_t[df_t["Name"] == obj]
@@ -109,8 +39,6 @@ def build_node_features(df_t, object_names):
 
         features.append([
             dist, dx, dy, dz,
-            gaze_dir_x, gaze_dir_y, gaze_dir_z,
-            gaze_pos_x, gaze_pos_y, gaze_pos_z
         ])
 
     tensor = torch.tensor(features, dtype=torch.float)
@@ -121,12 +49,11 @@ def create_single_sequence(i, timeframes, window_size, lookahead_steps, df_criti
     window_times = timeframes[i:i + window_size]
     label_times = timeframes[i + window_size:i + window_size + lookahead_steps]
 
-    graphs = []
+    frame_tensors = []
     for t in window_times:
         df_t = df_critical[df_critical["Timeframe"] == t]
-        x = build_node_features(df_t, object_names)
-        data = Data(x=x, edge_index=edge_index)
-        graphs.append(data)
+        frame_tensors.append(build_node_features(df_t, object_names))
+    seq_tensor = torch.stack(frame_tensors)
 
     df_future = df_critical[df_critical["Timeframe"].isin(label_times)]
     label = int((df_future["Name"] == "PowerLine1").any())
@@ -134,10 +61,7 @@ def create_single_sequence(i, timeframes, window_size, lookahead_steps, df_criti
     window_df = df_critical[df_critical["Timeframe"].isin(window_times)]
     source_file = window_df["source_file"].mode().iloc[0]
 
-    return graphs, label, source_file
-
-def create_graph_data(features, edge_index):
-    return Data(x=features, edge_index=edge_index)
+    return seq_tensor, label, source_file 
 
 
 def nx_to_edge_index(G, object_names):
@@ -151,7 +75,10 @@ def nx_to_edge_index(G, object_names):
     return edge_index
 
 
-def build_stgcn_dataset(df_critical, G, output_path, window_size, lookahead_seconds, n_jobs=-1):
+def build_stgcn_dataset(df_critical, G, output_path="./processed_data", n_jobs=-1, **params):
+    window_size = params.get("window_size") 
+    lookahead_seconds = params.get("LOOKAHEAD_SECONDS") 
+
     print("Starting STGCN dataset construction (parallel)...")
     os.makedirs(output_path, exist_ok=True)
 
@@ -177,14 +104,3 @@ def build_stgcn_dataset(df_critical, G, output_path, window_size, lookahead_seco
                os.path.join(output_path, "stgcn_dataset.pt"))
 
     print(f"Saved {len(sequences)} sequences to {output_path}/stgcn_dataset.pt")
-
-
-source_file_series = df_critical["source_file"].values
-
-build_stgcn_dataset(
-    df_critical=df_critical,
-    G=G,
-    output_path="./stgcn_data_no_fixated",
-    window_size=WINDOW_SIZE,
-    lookahead_seconds=LOOKAHEAD_SECONDS
-)
