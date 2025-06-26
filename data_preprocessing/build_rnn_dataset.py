@@ -70,7 +70,6 @@ def build_rnn_dataset(output_path, n_jobs=-1, **params):
     window_size = params.get("window_size")
     FIX_MIN_SEC = params.get("MIN_FIXATION_DURATION")
 
-
     print("Starting RNN dataset construction (parallel)...")
     
     df = pd.read_csv("./processed_data/combined_labeled_data.csv")
@@ -97,7 +96,7 @@ def build_rnn_dataset(output_path, n_jobs=-1, **params):
     timeframes = sorted(df_critical["Timeframe"].unique())
 
     delta_t = np.diff(timeframes).mean()
-    lookahead_steps = int(lookahead_seconds / delta_t)
+    lookahead_steps = int(lookahead_seconds / delta_t) # How many timeframes to look ahead for checking the label
 
     total_sequences = len(timeframes) - window_size - lookahead_steps
     print(f"Using {len(object_names)} objects, {len(timeframes)} timeframes, Δt = {delta_t:.4f}s")
@@ -111,6 +110,6 @@ def build_rnn_dataset(output_path, n_jobs=-1, **params):
     sequences, labels, source_file_names = zip(*results)
 
     torch.save((sequences, labels, source_file_names),
-               os.path.join(output_path, "rnn_dataset.pt"))
+               os.path.join(output_path, "rnn_dataset_{}_{}.pt".format(CRITICAL_DIST_THRESHOLD, lookahead_steps)))
 
-    print(f"Saved {len(sequences)} RNN sequences to {output_path}/rnn_dataset.pt")
+    print(f"Saved {len(sequences)} RNN sequences to {output_path}/rnn_dataset_{CRITICAL_DIST_THRESHOLD}_{lookahead_steps}.pt")

@@ -2,7 +2,7 @@ import torch.nn as nn
 
 
 class FlatGRU(nn.Module):
-    def __init__(self, in_dim, hid=158, layers=1, p_dropout=0.3):
+    def __init__(self, in_dim, hid=32, layers=1, p_dropout=0.3):
         super().__init__()
         self.gru = nn.GRU(in_dim, hid, num_layers=layers,
                           batch_first=True, dropout=0. if layers==1 else p_dropout)

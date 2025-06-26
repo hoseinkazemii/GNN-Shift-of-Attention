@@ -4,7 +4,6 @@ import networkx as nx
 
 
 def plot_graph(G):
-    # Visualize the graph
     plt.figure(figsize=(18, 12))
     pos = nx.spring_layout(G, seed=42, k=0.5)  # `k` controls spacing between nodes
     nx.draw_networkx_nodes(G, pos, node_color="lightgreen", node_size=700, alpha=0.9)
@@ -23,7 +22,9 @@ def plot_graph(G):
     plt.show()
 
 
-def plot_metrics(history):
+def plot_metrics(history, **params):
+    model_name = params.get("model_name")
+
     metrics = ["loss", "acc", "f1", "auc"]
     epochs = range(1, len(history["train_loss"]) + 1)
 
@@ -38,18 +39,17 @@ def plot_metrics(history):
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
-        plt.savefig(f"./plots/fig_{key}.png", dpi=300)
+        plt.savefig(f"./plots/{key}_per_epoch_{model_name}.png", dpi=300)
         plt.close()
 
 
 def plot_confusion(true_labels, predicted_labels, **params):
     model_name = params.get("model_name")
+    save_path = f"./plots/{model_name}_confusion_matrix_test_set.png"
 
-    save_path=f"./plots/{model_name}_confusion_matrix_test.png"
     cm = confusion_matrix(true_labels, predicted_labels)
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["No Powerline", "Powerline"])
 
-    plt.figure(figsize=(6, 5))
     disp.plot(cmap="Blues", values_format="d")
     plt.title("Confusion Matrix on Test Set")
     plt.grid(False)

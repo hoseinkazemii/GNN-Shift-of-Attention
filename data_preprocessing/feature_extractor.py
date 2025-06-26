@@ -77,7 +77,8 @@ def nx_to_edge_index(G, object_names):
 
 def build_stgcn_dataset(df_critical, G, output_path="./processed_data", n_jobs=-1, **params):
     window_size = params.get("window_size") 
-    lookahead_seconds = params.get("LOOKAHEAD_SECONDS") 
+    lookahead_seconds = params.get("LOOKAHEAD_SECONDS")
+    dist_threshold = params.get("dist_threshold") 
 
     print("Starting STGCN dataset construction (parallel)...")
     os.makedirs(output_path, exist_ok=True)
@@ -101,6 +102,6 @@ def build_stgcn_dataset(df_critical, G, output_path="./processed_data", n_jobs=-
     sequences, labels, source_file_names = zip(*results)
 
     torch.save((sequences, labels, object_names, edge_index, source_file_names),
-               os.path.join(output_path, "stgcn_dataset.pt"))
+               os.path.join(output_path, "stgcn_dataset_{}_{}.pt".format(dist_threshold, lookahead_steps)))
 
-    print(f"Saved {len(sequences)} sequences to {output_path}/stgcn_dataset.pt")
+    print(f"Saved {len(sequences)} sequences to {output_path}/stgcn_dataset_{dist_threshold}_{lookahead_steps}.pt")
