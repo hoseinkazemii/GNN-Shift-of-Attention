@@ -19,7 +19,6 @@ def generate_powerline_future_labels_variable_timestep(df, powerline_name="Power
     min_fixation_duration = params.get("MIN_FIXATION_DURATION")
     lookahead_seconds = params.get("LOOKAHEAD_SECONDS")
 
-
     df = df.reset_index(drop=True).copy()
     labels = []
     name_series = df["Name"].astype(str).values
@@ -90,4 +89,4 @@ def generate_labels(data_dir="./Data/", **params):
 
     df_combined = pd.concat(labeled_dfs, ignore_index=True)
 
-    df_combined.to_csv("./processed_data/combined_labeled_data.csv", index=False)
+    df_combined.to_csv("./processed_data/combined_labeled_data_{}_participants.csv".format(int(num_samples)), index=False)

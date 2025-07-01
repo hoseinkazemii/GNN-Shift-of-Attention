@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 
@@ -10,6 +11,21 @@ class FlatGRU(nn.Module):
         self.head = nn.Linear(hid, 1)
 
     def forward(self, x):  # x: [B,T,D]
+        # if torch.isnan(x).any():
+        #     print("[NaN DETECTED] Input x has NaN")
+
         _, h = self.gru(x)  # h: [layers,B,D]
-        h = self.drop(h[-1])
-        return self.head(h).squeeze(1)  # logits
+
+        # if torch.isnan(h).any():
+        #     print("[NaN DETECTED] GRU output h has NaN")
+
+        h = self.drop(h[-1])  # [B, D]
+        # if torch.isnan(h).any():
+        #     print("[NaN DETECTED] After dropout h has NaN")
+
+        logits = self.head(h).squeeze(1)  # [B]
+        # if torch.isnan(logits).any():
+        #     print("[NaN DETECTED] Output logits have NaN")
+        
+        return logits
+

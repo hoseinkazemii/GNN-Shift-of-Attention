@@ -1,1 +1,0 @@
-from .participant_split import STGCNDatasetSplitByParticipant

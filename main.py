@@ -1,9 +1,7 @@
-from data_preprocessing import generate_labels, build_graph, build_stgcn_dataset, build_rnn_dataset, load_rnn_dataset
-from dataset import STGCNDatasetSplitByParticipant
+from data_preprocessing import generate_labels, build_graph, build_stgcn_dataset, STGCNDatasetSplitByParticipant, build_rnn_dataset, load_rnn_dataset
 from models import STGCNModel, FlatGRU
 from train_eval import train_stgcn, evaluate_stgcn, train_rnn, evaluate_rnn
 from utils import setup_logger, plot_metrics, plot_confusion
-
 
 import torch
 
@@ -11,14 +9,14 @@ import torch
 
 
 
-params = {"num_samples":29,
-          "test_fraction":0.2,
-          "plot_graph":False,
-          "sampling_interval":0.02,
+params = {"num_samples":10,  # Number of participants to use for training/testing
+          "test_fraction":0.2, # Fraction of participants to use for testing
+          "plot_graph":False, # Whether to plot the graph structure
+          "sampling_interval":0.02, # Sampling interval in seconds
           "top_k":3, # Number of nearest neighbors to consider for each node
-          "dist_threshold":7.6,
+          "dist_threshold":8.0,
           "LOOKAHEAD_SECONDS" : 5.0,  # How many seconds into the future to look for the label
-          "MIN_FIXATION_DURATION" : 0.1,
+          "MIN_FIXATION_DURATION" : 0.1, 
           "window_size":10,
           "num_epochs":30,
           "batch_size":32,
@@ -61,7 +59,7 @@ def main():
 
     # Step2: Create dataset and split by participant, Train and Test
     train_dataset, test_dataset, pos_weight, input_dim = \
-    load_rnn_dataset("processed_data/rnn_dataset_{}_{}.pt".format(params["dist_threshold"], params["LOOKAHEAD_SECONDS"]), **params)
+    load_rnn_dataset("processed_data/rnn_dataset_{}_{}_{}_participants.pt".format(params["dist_threshold"], params["LOOKAHEAD_SECONDS"], int(params["num_samples"])), **params)
     model = FlatGRU(in_dim=input_dim).to(params["device"])
     history = train_rnn(model, train_dataset, test_dataset, pos_weight, **params)
     all_labels, all_preds = evaluate_rnn(model, test_dataset, **params)

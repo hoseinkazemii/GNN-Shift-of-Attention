@@ -10,6 +10,7 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True):
     for x, y in loader:
         x, y = x.to(device), y.to(device)
         if train: optimizer.zero_grad()
+        # print(f"[DEBUG] Input stats: mean={x.mean().item():.3f}, std={x.std().item():.3f}, max={x.max().item():.3f}, min={x.min().item():.3f}")
         out = model(x)
         loss = criterion(out, y)
         if train:
