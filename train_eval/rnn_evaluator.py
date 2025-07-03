@@ -1,11 +1,12 @@
 import torch
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report
 import logging
 
 
 def evaluate_rnn(model, test_dataset, **params):
-    device = params["device"]
-    batch_size = params.get("batch_size", 32)
+    device = params.get("device")
+    batch_size = params.get("batch_size")
+
     model.eval()
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size)
 

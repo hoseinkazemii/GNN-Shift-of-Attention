@@ -9,10 +9,20 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True):
     tot_loss, preds, probs, labs = 0., [], [], []
     for x, y in loader:
         x, y = x.to(device), y.to(device)
-        if train: optimizer.zero_grad()
-        # print(f"[DEBUG] Input stats: mean={x.mean().item():.3f}, std={x.std().item():.3f}, max={x.max().item():.3f}, min={x.min().item():.3f}")
+        if train: 
+            optimizer.zero_grad()
         out = model(x)
+
+        # print("x.shape:", x.shape)        # Expect [B, T, D]
+        # print("y.shape:", y.shape)        # Expect [B]
+        # print("y dtype:", y.dtype)        # Should be float32
+        # print("model output shape:", out.shape)  # Expect [B]
+        # print("model output (logits):", out[:5].detach().cpu().numpy())  # Look at sample logits
+        # print("labels:", y[:5].detach().cpu().numpy())  # Look at sample labels
         loss = criterion(out, y)
+        # print("Loss:", loss.item())
+        # print("*" * 50)
+
         if train:
             loss.backward(); optimizer.step()
         tot_loss += loss.item() * x.size(0)
@@ -38,7 +48,7 @@ def train_rnn(model, train_ds, test_ds, pos_weight, **params):
     test_dl  = torch.utils.data.DataLoader(test_ds, batch_size=batch_size)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
+    criterion = nn.BCEWithLogitsLoss()
 
     history = {
         "train_loss": [], "test_loss": [],

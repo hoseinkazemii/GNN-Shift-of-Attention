@@ -101,6 +101,13 @@ def build_rnn_dataset(output_path, n_jobs=-1, **params):
         (df["LoadingStarted"] == 1)
     ].copy()
 
+    print(f"df_critical['label_powerline_future_{lookahead_seconds}_seconds'] == 1] = ", len(df_critical[df_critical[f'label_powerline_future_{lookahead_seconds}_seconds'] == 1]))
+    print("**" * 50)
+    print(f"df_critical['label_powerline_future_{lookahead_seconds}_seconds'] == 0] = ", len(df_critical[df_critical[f'label_powerline_future_{lookahead_seconds}_seconds'] == 0]))
+    print("**" * 50)
+    print(f"df_critical.shape", df_critical.shape)
+
+
     df_fixated_objects = filter_fixation_episodes(df_critical, FIX_MIN_SEC)
 
     fixated_objects = df_fixated_objects["Name"].unique().tolist()
@@ -161,6 +168,6 @@ def build_rnn_dataset(output_path, n_jobs=-1, **params):
     print("Negative:", (labels_tensor == 0).sum().item())
 
     torch.save((sequence_tensor, labels, source_file_names),
-               os.path.join(output_path, f"rnn_dataset_{CRITICAL_DIST_THRESHOLD}_{lookahead_seconds}_{int(num_samples)}_participants.pt"))
+               os.path.join(output_path, f"rnn_dataset_{CRITICAL_DIST_THRESHOLD}_{lookahead_seconds}_{FIX_MIN_SEC}_{int(num_samples)}_participants.pt"))
 
     print(f"\nSaved {len(sequences)} sequences across {len(grouped)} participants.")
