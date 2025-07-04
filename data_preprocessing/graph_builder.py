@@ -9,9 +9,10 @@ def build_graph(**params):
     top_k = params.get("top_k")
     dist_threshold = params.get("dist_threshold")
     lookahead_seconds = params.get("LOOKAHEAD_SECONDS")
+    num_samples = params.get("num_samples")
 
 
-    df = pd.read_csv("./processed_data/combined_labeled_data.csv")
+    df = pd.read_csv("./processed_data/combined_labeled_data_{}_participants.csv".format(int(num_samples)))
 
     CRITICAL_DIST_THRESHOLD = dist_threshold
     df_critical = df[

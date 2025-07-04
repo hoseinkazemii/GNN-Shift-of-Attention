@@ -32,7 +32,7 @@ def plot_metrics(history, **params):
         key = metric.lower().replace(" ", "_")
         plt.figure(figsize=(7, 5))
         plt.plot(epochs, history[f"train_{key}"], label=f"Train {metric}")
-        plt.plot(epochs, history[f"test_{key}"], label=f"Test {metric}")
+        plt.plot(epochs, history[f"val_{key}"], label=f"Val {metric}")
         plt.xlabel("Epoch")
         plt.ylabel(metric)
         plt.title(f"{metric} over Epochs")
