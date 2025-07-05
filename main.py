@@ -55,8 +55,8 @@ def main():
     ## ------------- RNN -----------------
     setup_logger(**params)
     # Step1: Generate and preprocess RNN dataset
-    # generate_labels(**params)
-    # build_rnn_dataset(output_path="processed_data", **params)
+    generate_labels(**params)
+    build_rnn_dataset(output_path="processed_data", **params)
 
     # Step2: Create dataset and split by participant, Train and Test
     train_dataset, val_dataset, test_dataset, pos_weight, input_dim = \

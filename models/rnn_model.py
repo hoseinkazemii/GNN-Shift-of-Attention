@@ -2,18 +2,18 @@ import torch
 import torch.nn as nn
 
 class RNNModel(nn.Module):
-    def __init__(self, in_dim, hidden_dim=64, num_layers=2, dropout=0.5, rnn_type='LSTM'):
+    def __init__(self, in_dim, hidden_dim=64, num_layers=2, dropout=0.5, rnn_type='GRU'):
         super(RNNModel, self).__init__()
 
         self.in_dim = in_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.rnn_type = rnn_type
+        self.bidirectional = True
 
-        # Normalize input features across feature dim (per timestep)
         self.input_norm = nn.LayerNorm(in_dim)
+        rnn_output_dim = hidden_dim * 2 if self.bidirectional else hidden_dim
 
-        # Recurrent layer
         if rnn_type == 'LSTM':
             self.rnn = nn.LSTM(
                 input_size=in_dim,
@@ -21,7 +21,7 @@ class RNNModel(nn.Module):
                 num_layers=num_layers,
                 batch_first=True,
                 dropout=dropout if num_layers > 1 else 0,
-                bidirectional=False
+                bidirectional=self.bidirectional
             )
         elif rnn_type == 'GRU':
             self.rnn = nn.GRU(
@@ -30,7 +30,7 @@ class RNNModel(nn.Module):
                 num_layers=num_layers,
                 batch_first=True,
                 dropout=dropout if num_layers > 1 else 0,
-                bidirectional=False
+                bidirectional=self.bidirectional
             )
         else:
             raise ValueError(f"Unsupported RNN type: {rnn_type}")
@@ -38,7 +38,7 @@ class RNNModel(nn.Module):
         # Classification head
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim, 32),
+            nn.Linear(rnn_output_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(32, 1)
